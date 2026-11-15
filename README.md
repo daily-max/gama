@@ -23,6 +23,26 @@ python3 -m http.server 8000
 
 The game goes live at `https://daily-max.github.io/gama/` within a minute or so.
 
+### Run with Docker
+
+The repo has a `Dockerfile` at its root, so a build from the repo root works out of the box:
+
+```bash
+docker build -t gama .
+docker run --rm -p 8080:8080 gama
+# then open http://localhost:8080
+```
+
+The container listens on `PORT`, which defaults to `8080`. On a platform that hands you a port, pass it in:
+
+```bash
+docker run --rm -e PORT=3000 -p 3000:3000 gama
+```
+
+It is `nginx:1.27-alpine` with two files copied in — the game and an nginx site config rendered from `nginx/default.conf.template`. No Node, no build step, no dependencies.
+
+> Building with `docker build .` from anywhere other than the repo root fails with `failed to read dockerfile: open Dockerfile: no such file or directory` — the context must contain the `Dockerfile`. Either `cd` into the repo or point at it: `docker build -f /path/to/gama/Dockerfile /path/to/gama`.
+
 ## Controls
 
 | Action | Keyboard / mouse | Touch |
