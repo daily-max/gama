@@ -41,6 +41,8 @@ docker run --rm -e PORT=3000 -p 3000:3000 gama
 
 It is `nginx:1.27-alpine` with two files copied in — the game and an nginx site config rendered from `nginx/default.conf.template`. No Node, no build step, no dependencies.
 
+The site config sends `no-cache` on `/` and `/index.html` (everything else is cacheable), adds `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and a `Content-Security-Policy`, and answers `/favicon.ico` with `204` — the icon itself is an inline `data:` URI in the page. There is no `EXPOSE`: the port is whatever `$PORT` says at run time.
+
 > Building with `docker build .` from anywhere other than the repo root fails with `failed to read dockerfile: open Dockerfile: no such file or directory` — the context must contain the `Dockerfile`. Either `cd` into the repo or point at it: `docker build -f /path/to/gama/Dockerfile /path/to/gama`.
 
 ## Controls
@@ -55,7 +57,7 @@ It is `nginx:1.27-alpine` with two files copied in — the game and an nginx sit
 | Mute | `M` | — |
 | Start | `Space` / `Enter` | tap **Start** |
 
-The ship follows whichever you touched last: press a key to switch to keyboard control, move the mouse to switch back to pointer control.
+The ship follows whichever you touched last: press a key to switch to keyboard control, move the mouse to switch back to pointer control. Restarting mid-run with `R` saves a new personal best before it resets.
 
 ## How it plays
 
@@ -82,10 +84,24 @@ Everything lives in `index.html`:
 - `spawnEnemy()` / `spawnSentinel()` — wave composition and difficulty curve
 - `updatePlayer()` / `updateEnemies()` / `updateBullets()` / `updateDrops()` — simulation, all delta-timed
 - `draw*()` — the vector artwork: hulls, glow, particles, parallax starfield
-- `frame()` — the `requestAnimationFrame` loop, delta clamped to 50 ms so a stalled tab can't teleport anything
+- `frame()` — the `requestAnimationFrame` loop: a fixed 120 Hz simulation step with a bounded catch-up (12 steps max), so the game plays identically at 30, 60 or 144 Hz and a stalled tab can't teleport anything
+- `smooth()` — frame-rate independent smoothing, used for pointer steering
+- `damagePlayer()` — returns `true` only when a hit actually lands; enemy body contact is rate-limited by `contactCool` so ramming can't drain or delete anything per frame
+- `say()` — polite live-region announcements for wave changes, hull hits and game over
 
 Tuning knobs worth playing with: `maxSpeed` in `updatePlayer()`, the spawn interval in `update()`, and the `hp` / `value` numbers in `spawnEnemy()`.
 
 ## Browser support
 
 Chrome, Edge, Firefox and Safari, desktop and mobile. Uses `canvas 2d`, `localStorage` and the Web Audio API; sound is optional and the game runs fine if audio is blocked.
+
+## Accessibility
+
+- The canvas carries a description, and wave changes, hull hits and game over are announced through a polite live region. The score HUD stays silent on purpose, so a kill every few hundred milliseconds can't flood a screen reader.
+- Pinch-zoom is left enabled.
+- Screen shake and the damage flash are skipped when the OS asks for reduced motion (`prefers-reduced-motion: reduce`).
+- Every action has a keyboard equivalent — start, pause, mute, restart — and nothing is pointer-only.
+
+## Performance notes
+
+The background and vignette gradients are built once per resize rather than twice per frame, bullets are drawn in grouped passes so the canvas shadow state is set a handful of times instead of once per bullet, and the particle list is capped at 900 so a long boss fight can't grow it without bound.

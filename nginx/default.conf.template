@@ -1,24 +1,45 @@
+# Rendered by the nginx image's envsubst at start-up; ${PORT} comes from the
+# container environment.
+
+# Cache policy by URI. "/" and "/index.html" are the document people load, so
+# they must revalidate; everything else can be cached.
+map $uri $gama_cache {
+    default        "public, max-age=3600";
+    "/"            "no-cache";
+    "/index.html"  "no-cache";
+}
+
 server {
     listen       ${PORT};
     server_name  _;
 
     root   /usr/share/nginx/html;
     index  index.html;
+    charset utf-8;
+
+    # Every add_header lives at server level on purpose: an add_header inside a
+    # location block stops the server-level ones from being inherited, which is
+    # how the security headers used to disappear for the main page.
+    add_header Cache-Control            $gama_cache always;
+    add_header X-Content-Type-Options   "nosniff" always;
+    add_header X-Frame-Options          "SAMEORIGIN" always;
+    add_header Referrer-Policy          "no-referrer-when-downgrade" always;
+    add_header Content-Security-Policy  "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" always;
 
     # The whole game is one file; anything else falls back to it.
     location / {
         try_files $uri $uri/ /index.html;
     }
 
-    location = /index.html {
-        add_header Cache-Control "no-cache";
+    # No icon file ships with the game — the page uses an inline data: URI icon.
+    location = /favicon.ico {
+        access_log off;
+        return 204;
     }
 
     gzip              on;
-    gzip_types        text/html application/javascript text/css;
+    gzip_vary         on;
+    gzip_comp_level   6;
     gzip_min_length   1024;
-
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-Frame-Options        "SAMEORIGIN" always;
-    add_header Referrer-Policy        "no-referrer-when-downgrade" always;
+    gzip_types        application/javascript text/css;
 }
