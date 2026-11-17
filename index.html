@@ -2,8 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#05060f">
+<meta name="description" content="GAMA — Neon Sentinel: a tiny browser arcade survival shooter. One file, no build step, no dependencies.">
+<meta property="og:title" content="GAMA — Neon Sentinel">
+<meta property="og:description" content="A tiny browser arcade survival shooter. One file, no build step, no dependencies.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2305060f'/%3E%3Cpath d='M16 5 27 27 16 21 5 27Z' fill='%234de3ff'/%3E%3C/svg%3E">
 <title>GAMA — Neon Sentinel</title>
 <style>
   :root{
@@ -44,6 +49,10 @@
   }
   .heart.on{background:var(--magenta);box-shadow:0 0 12px rgba(255,62,165,.85);}
   #muteTag{opacity:.45;font-size:.8em;}
+  .sr-only{
+    position:absolute;width:1px;height:1px;margin:-1px;padding:0;
+    overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;
+  }
 
   /* ---------- overlays ---------- */
   #overlay{
@@ -115,7 +124,7 @@
 </head>
 <body>
 <div id="stage">
-  <canvas id="game"></canvas>
+  <canvas id="game" role="img" aria-label="GAMA — Neon Sentinel. Arcade survival shooter: fly with WASD, the arrow keys, or by dragging. The ship fires on its own.">Your browser needs canvas support to play GAMA.</canvas>
 
   <div id="hud">
     <div class="row">
@@ -136,6 +145,8 @@
     </div>
   </div>
 
+  <div id="sr" class="sr-only" role="status" aria-live="polite"></div>
+
   <div id="overlay">
     <div class="panel" id="menu">
       <h1>GAMA</h1>
@@ -146,7 +157,7 @@
         <li>Or drag with mouse / finger to steer</li>
         <li><kbd>P</kbd> pause &nbsp;·&nbsp; <kbd>M</kbd> mute</li>
       </ul>
-      <button class="btn" id="startBtn">Start</button>
+      <button type="button" class="btn" id="startBtn">Start</button>
       <p class="hint">Best score <span id="menuBest">0</span></p>
     </div>
 
@@ -154,13 +165,13 @@
       <h2>Ship down</h2>
       <p class="score-line">Score <b id="finalScore">0</b></p>
       <p class="best-line">Best <span id="finalBest">0</span></p>
-      <button class="btn" id="againBtn">Fly again</button>
+      <button type="button" class="btn" id="againBtn">Fly again</button>
     </div>
 
     <div class="panel hidden" id="paused">
       <h2>Paused</h2>
       <p class="desc">Take a breath. The drones will wait.</p>
-      <button class="btn" id="resumeBtn">Resume</button>
+      <button type="button" class="btn" id="resumeBtn">Resume</button>
     </div>
   </div>
 </div>
@@ -172,10 +183,9 @@
   // ------------------------------------------------------------------ helpers
   var TAU = Math.PI * 2;
   function rand(a, b) { return a + Math.random() * (b - a); }
-  function randInt(a, b) { return Math.floor(rand(a, b + 1)); }
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
-  function lerp(a, b, t) { return a + (b - a) * t; }
-  function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+  // Frame-rate independent smoothing: identical feel at 30, 60 or 144 Hz.
+  function smooth(rate, dt) { return 1 - Math.exp(-rate * dt); }
   function hit(a, b) {
     var dx = a.x - b.x, dy = a.y - b.y, r = a.r + b.r;
     return dx * dx + dy * dy < r * r;
@@ -230,6 +240,10 @@
   var canvas = document.getElementById('game');
   var ctx = canvas.getContext('2d', { alpha: false });
   var overlay = document.getElementById('overlay');
+  var sr = document.getElementById('sr');
+  var reduceMotion = window.matchMedia
+    ? window.matchMedia('(prefers-reduced-motion: reduce)')
+    : { matches: false };
   var panels = {
     menu: document.getElementById('menu'),
     over: document.getElementById('gameover'),
@@ -246,20 +260,43 @@
     finalBest: document.getElementById('finalBest')
   };
 
+  // Screen-reader announcements: only wave changes, hits and game over, so the
+  // HUD ticking on every kill does not flood the queue.
+  function say(msg) {
+    if (sr) { sr.textContent = msg; }
+  }
+
   var W = 1024, H = 768, DPR = 1;
+  var rect = { left: 0, top: 0, width: 1024, height: 768 };
+  var bgGrad = null, vignette = null;
+
+  // The background and vignette only depend on W/H, so build them once per
+  // resize instead of twice per frame.
+  function buildGradients() {
+    bgGrad = ctx.createRadialGradient(W / 2, H * 0.15, 0, W / 2, H * 0.4, Math.max(W, H) * 0.9);
+    bgGrad.addColorStop(0, '#0b1330');
+    bgGrad.addColorStop(0.55, '#070b1c');
+    bgGrad.addColorStop(1, '#03040a');
+    vignette = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.78);
+    vignette.addColorStop(0, 'rgba(0,0,0,0)');
+    vignette.addColorStop(1, 'rgba(0,0,0,.55)');
+  }
 
   function resize() {
-    var rect = canvas.getBoundingClientRect();
-    W = Math.max(320, Math.round(rect.width) || window.innerWidth);
-    H = Math.max(320, Math.round(rect.height) || window.innerHeight);
+    // Cache the box: pointer handlers read it instead of forcing a layout per event.
+    rect = canvas.getBoundingClientRect();
+    // Use the real box — flooring W/H at 320 would stretch the render on small viewports.
+    W = Math.max(1, Math.round(rect.width) || window.innerWidth || 1024);
+    H = Math.max(1, Math.round(rect.height) || window.innerHeight || 768);
     DPR = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.round(W * DPR);
     canvas.height = Math.round(H * DPR);
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     buildStars();
+    buildGradients();
     if (player) {
-      player.x = clamp(player.x, 40, W - 40);
-      player.y = clamp(player.y, 40, H - 40);
+      player.x = clamp(player.x, player.r + 6, W - player.r - 6);
+      player.y = clamp(player.y, player.r + 6, H - player.r - 6);
     }
   }
 
@@ -291,8 +328,7 @@
 
   var input = { up: 0, down: 0, left: 0, right: 0 };
   var steer = 'key';
-  var pointer = null;
-  var pointerActive = false;
+  var pointer = null;   // normalised 0..1, so a resize or rotation cannot strand the ship
 
   // ------------------------------------------------------------------- stars
   function buildStars() {
@@ -325,8 +361,7 @@
       cool: 0,
       rapid: 0,
       triple: 0,
-      shield: 0,
-      roll: 0
+      shield: 0
     };
   }
 
@@ -341,6 +376,7 @@
     banner('Wave ' + game.wave);
     Sound.wave();
     if (game.wave % 5 === 0) { game.bossPending = true; }
+    say('Wave ' + game.wave + (game.bossPending ? '. Sentinel incoming.' : ''));
   }
 
   // ------------------------------------------------------------------ spawns
@@ -421,7 +457,10 @@
   }
 
   // --------------------------------------------------------------- particles
+  var MAX_PARTS = 900;
   function burst(x, y, color, count, speed, size) {
+    // Hard cap: a long boss fight must not grow the particle list without bound.
+    if (parts.length > MAX_PARTS) { return; }
     for (var i = 0; i < count; i++) {
       var a = rand(0, TAU);
       var s = rand(speed * 0.25, speed);
@@ -457,7 +496,6 @@
       });
     }
     Sound.shoot();
-    p.roll = 0.5;
   }
 
   function enemyFire(e) {
@@ -485,16 +523,19 @@
   }
 
   // ------------------------------------------------------------------ damage
+  // Returns true only when a hit actually landed, so callers never deal damage
+  // to an enemy while the player is invulnerable.
   function damagePlayer() {
     var p = player;
-    if (p.inv > 0) { return; }
+    if (!p || p.inv > 0) { return false; }
     if (p.shield > 0) {
       p.shield = 0;
       p.inv = 0.9;
       game.shake = Math.max(game.shake, 8);
       burst(p.x, p.y, '#7dffb2', 22, 300, 3);
       Sound.hit();
-      return;
+      say('Shield absorbed the hit');
+      return true;
     }
     p.hp -= 1;
     p.inv = 1.7;
@@ -504,6 +545,8 @@
     Sound.hurt();
     syncHearts();
     if (p.hp <= 0) { endGame(); }
+    else { say(p.hp + ' hull bar' + (p.hp === 1 ? '' : 's') + ' left'); }
+    return true;
   }
 
   function killEnemy(e) {
@@ -545,13 +588,22 @@
     }
   }
 
+  var heartEls = [];
   function syncHearts() {
     if (!player) { return; }
-    var html = '';
-    for (var i = 0; i < player.maxHp; i++) {
-      html += '<span class="heart' + (i < player.hp ? ' on' : '') + '"></span>';
+    if (heartEls.length !== player.maxHp) {
+      heartEls = [];
+      el.hearts.textContent = '';
+      for (var i = 0; i < player.maxHp; i++) {
+        var h = document.createElement('span');
+        h.className = 'heart';
+        el.hearts.appendChild(h);
+        heartEls.push(h);
+      }
     }
-    el.hearts.innerHTML = html;
+    for (var j = 0; j < heartEls.length; j++) {
+      heartEls[j].classList.toggle('on', j < player.hp);
+    }
   }
 
   function syncMute() {
@@ -590,20 +642,28 @@
     syncHearts();
     showPanel(null);
     banner('Wave 1');
+    say('Wave 1');
+  }
+
+  // Persist a new record. Called from endGame() and from a mid-run restart, so
+  // a stray R cannot throw away a personal best.
+  function saveBest() {
+    if (game.score <= best) { return false; }
+    best = game.score;
+    try { localStorage.setItem(STORE_KEY, String(best)); } catch (e) { /* storage may be blocked */ }
+    return true;
   }
 
   function endGame() {
     game.mode = 'over';
     burst(player.x, player.y, '#ffffff', 50, 420, 4);
     game.shake = 24;
-    if (game.score > best) {
-      best = game.score;
-      try { localStorage.setItem(STORE_KEY, String(best)); } catch (e) { /* storage may be blocked */ }
-    }
+    saveBest();
     el.finalScore.textContent = game.score;
     el.finalBest.textContent = best;
     syncHud();
     Sound.over();
+    say('Ship down. Score ' + game.score + '. Best ' + best + '.');
     setTimeout(function () {
       if (game.mode === 'over') { showPanel('over'); }
     }, 520);
@@ -632,7 +692,12 @@
     }
     else if (k === 'p' || k === 'P' || k === 'Escape') { togglePause(); }
     else if (k === 'm' || k === 'M') { Sound.toggle(); syncMute(); }
-    else if (k === 'r' || k === 'R') { if (game.mode === 'playing' || game.mode === 'over') { startGame(); } }
+    else if (k === 'r' || k === 'R') {
+      if (game.mode === 'playing' || game.mode === 'paused' || game.mode === 'over') {
+        saveBest();
+        startGame();
+      }
+    }
   }
 
   function keyUp(ev) {
@@ -643,30 +708,25 @@
     else if (k === 'ArrowRight' || k === 'd' || k === 'D') { input.right = 0; }
   }
 
-  function pointerPos(ev) {
-    var rect = canvas.getBoundingClientRect();
-    return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+  // Store the pointer normalised, so resizing or rotating keeps the target valid.
+  function trackPointer(ev) {
+    if (ev.target && ev.target.closest && ev.target.closest('.panel')) { return; }
+    pointer = {
+      nx: clamp((ev.clientX - rect.left) / (rect.width || 1), 0, 1),
+      ny: clamp((ev.clientY - rect.top) / (rect.height || 1), 0, 1)
+    };
+    steer = 'pointer';
   }
 
   window.addEventListener('keydown', keyDown, { passive: false });
   window.addEventListener('keyup', keyUp);
 
-  window.addEventListener('pointermove', function (ev) {
-    if (ev.target && ev.target.closest && ev.target.closest('.panel')) { return; }
-    pointer = pointerPos(ev);
-    steer = 'pointer';
-  }, { passive: true });
+  window.addEventListener('pointermove', trackPointer, { passive: true });
 
   window.addEventListener('pointerdown', function (ev) {
-    if (ev.target && ev.target.closest && ev.target.closest('.panel')) { return; }
-    pointerActive = true;
-    pointer = pointerPos(ev);
-    steer = 'pointer';
+    trackPointer(ev);
     Sound.unlock();
   }, { passive: true });
-
-  window.addEventListener('pointerup', function () { pointerActive = false; }, { passive: true });
-  window.addEventListener('pointercancel', function () { pointerActive = false; }, { passive: true });
 
   window.addEventListener('blur', function () {
     input.up = input.down = input.left = input.right = 0;
@@ -690,13 +750,14 @@
     p.rapid = Math.max(0, p.rapid - dt);
     p.triple = Math.max(0, p.triple - dt);
     p.shield = Math.max(0, p.shield - dt);
-    p.roll = Math.max(0, p.roll - dt * 3);
 
     if (steer === 'pointer' && pointer) {
-      var dx = pointer.x - p.x;
-      var dy = pointer.y - p.y;
-      p.vx = lerp(p.vx, dx * 10, 0.4);
-      p.vy = lerp(p.vy, dy * 10, 0.4);
+      var dx = pointer.nx * W - p.x;
+      var dy = pointer.ny * H - p.y;
+      // Exponential smoothing, so the follow feels the same at any refresh rate.
+      var k = smooth(30, dt);
+      p.vx += (dx * 10 - p.vx) * k;
+      p.vy += (dy * 10 - p.vy) * k;
     } else {
       var ax = (input.right - input.left) * 2800;
       var ay = (input.down - input.up) * 2800;
@@ -761,9 +822,11 @@
         }
       }
 
-      // body collision with the player
-      if (hit(e, player)) {
-        damagePlayer();
+      // Body collision with the player: one trade per contact window, and only
+      // when the hit actually lands — no free damage while invulnerable.
+      e.contactCool = Math.max(0, (e.contactCool || 0) - dt);
+      if (e.contactCool === 0 && hit(e, player) && damagePlayer()) {
+        e.contactCool = 0.4;
         e.hp -= 2;
         e.hurtT = 0.12;
         burst(e.x, e.y, '#ff3ea5', 10, 200, 2.6);
@@ -1063,33 +1126,50 @@
   }
 
   function drawBullets() {
-    for (var i = 0; i < bullets.length; i++) {
-      var b = bullets[i];
-      if (b.hostile) {
-        glow('#ff3ea5', 12);
-        ctx.fillStyle = '#ff8ec4';
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, b.r, 0, TAU);
-        ctx.fill();
-        noGlow();
-        ctx.fillStyle = '#fff';
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, b.r * 0.42, 0, TAU);
-        ctx.fill();
-      } else {
-        glow('#9fe9ff', 14);
-        ctx.fillStyle = '#dff9ff';
-        ctx.beginPath();
-        ctx.ellipse(b.x, b.y, b.r * 0.7, b.r * 2.1, 0, 0, TAU);
-        ctx.fill();
-        noGlow();
-      }
+    // Grouped into passes so the shadow state is set a handful of times per
+    // frame instead of once per bullet.
+    var i, b;
+
+    glow('#ff3ea5', 12);
+    ctx.fillStyle = '#ff8ec4';
+    for (i = 0; i < bullets.length; i++) {
+      b = bullets[i];
+      if (!b.hostile) { continue; }
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, TAU);
+      ctx.fill();
     }
+    noGlow();
+
+    ctx.fillStyle = '#fff';
+    for (i = 0; i < bullets.length; i++) {
+      b = bullets[i];
+      if (!b.hostile) { continue; }
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r * 0.42, 0, TAU);
+      ctx.fill();
+    }
+
+    glow('#9fe9ff', 14);
+    ctx.fillStyle = '#dff9ff';
+    for (i = 0; i < bullets.length; i++) {
+      b = bullets[i];
+      if (b.hostile) { continue; }
+      ctx.beginPath();
+      ctx.ellipse(b.x, b.y, b.r * 0.7, b.r * 2.1, 0, 0, TAU);
+      ctx.fill();
+    }
+    noGlow();
   }
 
   function drawDrops() {
+    if (!drops.length) { return; }
     var colors = { rapid: '#4de3ff', triple: '#ff3ea5', shield: '#7dffb2', heal: '#ffd166' };
     var letters = { rapid: 'R', triple: 'T', shield: 'S', heal: '+' };
+    // Text state once for the whole list, not once per pickup.
+    ctx.font = 'bold 13px ui-monospace,monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
     for (var i = 0; i < drops.length; i++) {
       var d = drops[i];
       var c = colors[d.type];
@@ -1106,9 +1186,6 @@
       ctx.stroke();
       noGlow();
       ctx.fillStyle = c;
-      ctx.font = 'bold 13px ui-monospace,monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
       ctx.fillText(letters[d.type], 0, 1);
       ctx.restore();
     }
@@ -1144,16 +1221,12 @@
   }
 
   function draw() {
-    // background
-    var bg = ctx.createRadialGradient(W / 2, H * 0.15, 0, W / 2, H * 0.4, Math.max(W, H) * 0.9);
-    bg.addColorStop(0, '#0b1330');
-    bg.addColorStop(0.55, '#070b1c');
-    bg.addColorStop(1, '#03040a');
-    ctx.fillStyle = bg;
+    // background (built in resize())
+    ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, W, H);
 
     ctx.save();
-    if (game.shake > 0.2) {
+    if (!reduceMotion.matches && game.shake > 0.2) {
       ctx.translate(rand(-game.shake, game.shake) * 0.5, rand(-game.shake, game.shake) * 0.5);
     }
 
@@ -1167,29 +1240,41 @@
 
     ctx.restore();
 
-    if (game.flash > 0) {
+    if (game.flash > 0 && !reduceMotion.matches) {
       ctx.fillStyle = 'rgba(255,62,165,' + (game.flash * 0.22) + ')';
       ctx.fillRect(0, 0, W, H);
     }
 
-    // vignette
-    var vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.78);
-    vg.addColorStop(0, 'rgba(0,0,0,0)');
-    vg.addColorStop(1, 'rgba(0,0,0,.55)');
-    ctx.fillStyle = vg;
+    // vignette (built in resize())
+    ctx.fillStyle = vignette;
     ctx.fillRect(0, 0, W, H);
   }
 
   // -------------------------------------------------------------- main loop
+  // Fixed 120 Hz simulation with a bounded catch-up: movement, spawns and
+  // collisions behave the same on a 30 Hz phone and a 144 Hz monitor, and a
+  // stalled tab can never teleport anything. Rendering stays on rAF.
+  var STEP = 1 / 120;
+  var MAX_STEPS = 12;
+  var acc = 0;
   var last = 0;
+
   function frame(now) {
     if (!last) { last = now; }
     var dt = (now - last) / 1000;
     last = now;
-    if (dt > 0.05) { dt = 0.05; }
     if (dt < 0) { dt = 0; }
+    if (dt > 0.1) { dt = 0.1; }
 
-    update(dt);
+    acc += dt;
+    var steps = 0;
+    while (acc >= STEP && steps < MAX_STEPS) {
+      update(STEP);
+      acc -= STEP;
+      steps += 1;
+    }
+    if (steps === MAX_STEPS) { acc = 0; }
+
     draw();
     syncHud();
     requestAnimationFrame(frame);
