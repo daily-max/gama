@@ -1,0 +1,417 @@
+From 0560e47c906210697dac6dcea6e865adfb72bc62 Mon Sep 17 00:00:00 2001
+From: daily-max <daily-max@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:25:06 +0000
+Subject: [PATCH] feat: pause button, 3-2-1 resume countdown, exit to title
+ screen
+
+- On-screen pause button in the top-right corner: pause glyph while
+  flying, play glyph while paused, hidden in the menu and on game over.
+  It paints above the overlay so it doubles as a Resume control, and
+  pointer tracking skips it so tapping pause never moves the ship.
+- Resuming now runs a 3-2-1 countdown in a new `resuming` mode. The
+  world stays frozen for all of it, held directions are remembered and
+  apply the moment it hits zero, and P/Esc/the corner button cancel it
+  back to the paused panel. Runs on the fixed 120 Hz step, so a stalled
+  frame cannot skip or stretch it.
+- The paused panel gains Exit, which banks the best score and returns to
+  the title screen.
+- fix: one-shot keys ignore keyboard autorepeat. Holding P or Esc for
+  longer than a tap used to toggle pause many times and leave the game
+  resumed with the panel still up.
+- fix: Space/Enter on a focused button is no longer swallowed by the
+  global key handler, so Tab then Enter now works on Start, Resume, Exit
+  and the corner pause button.
+- Rebase the fixed-step clock on resume, so a paused interval is never
+  paid back as a burst of catch-up steps on the first frame back.
+---
+ README.md  |   6 +-
+ index.html | 195 +++++++++++++++++++++++++++++++++++++++++++++++++----
+ 2 files changed, 188 insertions(+), 13 deletions(-)
+
+diff --git a/README.md b/README.md
+index 56b8920..4f9b00c 100644
+--- a/README.md
++++ b/README.md
+@@ -52,8 +52,9 @@ The site config sends `no-cache` on `/` and `/index.html` (everything else is ca
+ | Move | `WASD` or arrow keys | drag anywhere |
+ | Steer with pointer | move the mouse — the ship follows | — |
+ | Fire | automatic | automatic |
+-| Pause / resume | `P` or `Esc` | — |
++| Pause / resume | `P` or `Esc` | tap the pause button, top-right |
+ | Restart | `R` | — |
++| Exit to the title screen | **Exit** on the paused panel (`Tab`, then `Enter`) | tap **Exit** on the paused panel |
+ | Mute | `M` | — |
+ | Start | `Space` / `Enter` | tap **Start** |
+ 
+@@ -73,6 +74,8 @@ The ship follows whichever you touched last: press a key to switch to keyboard c
+   - `S` shield, absorbs one hit (9s)
+   - `+` repairs one hull bar
+ - **Lives.** Three hull bars. A hit costs one and gives you a short window of invulnerability. Colliding with a drone hurts both of you.
++- **Resuming.** Coming back from a pause always runs a 3-2-1 countdown with the world frozen, so a drone mid-dive or a boss burst cannot land before you have the controls back. Hold a direction during it and you fly that way the moment it hits zero; press `P`, `Esc` or the corner button to cancel it and go back to paused.
++- **Exiting.** The paused panel offers **Exit**: it banks your best score and drops you back on the title screen, exactly as a mid-run restart banks it.
+ - **Score** is per kill, with bosses worth far more. Your best run is saved in `localStorage`.
+ 
+ ## Code map
+@@ -84,6 +87,7 @@ Everything lives in `index.html`:
+ - `spawnEnemy()` / `spawnSentinel()` — wave composition and difficulty curve
+ - `updatePlayer()` / `updateEnemies()` / `updateBullets()` / `updateDrops()` — simulation, all delta-timed
+ - `draw*()` — the vector artwork: hulls, glow, particles, parallax starfield
++- `togglePause()` / `drawCountdown()` — pause, and the 3-2-1 resume countdown: a `resuming` mode that ticks only the clock and leaves the simulation frozen
+ - `frame()` — the `requestAnimationFrame` loop: a fixed 120 Hz simulation step with a bounded catch-up (12 steps max), so the game plays identically at 30, 60 or 144 Hz and a stalled tab can't teleport anything
+ - `smooth()` — frame-rate independent smoothing, used for pointer steering
+ - `damagePlayer()` — returns `true` only when a hit actually lands; enemy body contact is rate-limited by `contactCool` so ramming can't drain or delete anything per frame
+diff --git a/index.html b/index.html
+index 1fba1df..cd65992 100644
+--- a/index.html
++++ b/index.html
+@@ -49,6 +49,34 @@
+   }
+   .heart.on{background:var(--magenta);box-shadow:0 0 12px rgba(255,62,165,.85);}
+   #muteTag{opacity:.45;font-size:.8em;}
++
++  /* ---------- pause button (top-right corner) ---------- */
++  .top-right{display:flex;align-items:flex-start;justify-content:flex-end;gap:clamp(9px,1.6vmin,15px);}
++  .top-right>div{text-align:right;}
++  .pause-btn{
++    /* Sits above the overlay, so it stays a working Resume control while the
++       paused panel is up. */
++    position:relative;z-index:2;
++    pointer-events:auto;flex:none;
++    width:clamp(40px,5.4vmin,48px);height:clamp(40px,5.4vmin,48px);
++    display:grid;place-items:center;padding:0;
++    border-radius:50%;cursor:pointer;
++    border:1px solid rgba(77,227,255,.38);
++    background:linear-gradient(160deg,rgba(12,20,44,.78),rgba(6,8,20,.88));
++    color:var(--cyan);
++    box-shadow:0 10px 30px -14px rgba(77,227,255,.9);
++    -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
++    transition:transform .14s ease,border-color .14s ease,color .14s ease,box-shadow .14s ease;
++  }
++  .pause-btn svg{width:42%;height:42%;display:block;fill:currentColor;}
++  .pause-btn .ic-play{display:none;}
++  .pause-btn.is-paused{color:var(--lime);border-color:rgba(125,255,178,.55);box-shadow:0 10px 30px -14px rgba(125,255,178,.9);}
++  .pause-btn.is-paused .ic-pause{display:none;}
++  .pause-btn.is-paused .ic-play{display:block;}
++  .pause-btn:hover{transform:translateY(-1px);border-color:rgba(77,227,255,.75);}
++  .pause-btn:active{transform:scale(.96);}
++  .pause-btn:focus-visible{outline:2px solid #fff;outline-offset:3px;}
++  .pause-btn[hidden]{display:none;}
+   .sr-only{
+     position:absolute;width:1px;height:1px;margin:-1px;padding:0;
+     overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;
+@@ -113,6 +141,13 @@
+     box-shadow:0 12px 40px -12px rgba(77,227,255,.9);
+     transition:transform .14s ease,box-shadow .14s ease;
+   }
++  .btn-row{display:flex;gap:clamp(10px,1.6vmin,14px);justify-content:center;flex-wrap:wrap;margin-top:26px;}
++  .btn-row .btn{margin-top:0;}
++  .btn.ghost{
++    background:transparent;color:#cfe6ff;
++    border:1px solid rgba(255,255,255,.24);box-shadow:none;
++  }
++  .btn.ghost:hover{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.46);box-shadow:none;}
+   .btn:hover{transform:translateY(-2px);box-shadow:0 18px 46px -12px rgba(77,227,255,1);}
+   .btn:active{transform:translateY(0) scale(.98);}
+   .btn:focus-visible{outline:2px solid #fff;outline-offset:3px;}
+@@ -133,10 +168,17 @@
+         <span class="val" id="score">0</span>
+         <div id="hearts"></div>
+       </div>
+-      <div class="right">
+-        <span class="stat">Wave</span>
+-        <span class="val" id="wave">1</span>
+-        <div class="stat" style="margin-top:6px">Best <span id="best">0</span></div>
++      <div class="right top-right">
++        <div>
++          <span class="stat">Wave</span>
++          <span class="val" id="wave">1</span>
++          <div class="stat" style="margin-top:6px">Best <span id="best">0</span></div>
++        </div>
++        <button type="button" class="pause-btn" id="pauseBtn" hidden
++                aria-label="Pause game" aria-pressed="false" title="Pause (P or Esc)">
++          <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="6.5" y="4" width="4" height="16" rx="1.4"/><rect x="13.5" y="4" width="4" height="16" rx="1.4"/></svg>
++          <svg class="ic-play" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 4.9 19.2 12 8 19.1Z"/></svg>
++        </button>
+       </div>
+     </div>
+     <div class="row">
+@@ -171,7 +213,11 @@
+     <div class="panel hidden" id="paused">
+       <h2>Paused</h2>
+       <p class="desc">Take a breath. The drones will wait.</p>
+-      <button type="button" class="btn" id="resumeBtn">Resume</button>
++      <div class="btn-row">
++        <button type="button" class="btn" id="resumeBtn">Resume</button>
++        <button type="button" class="btn ghost" id="exitBtn">Exit</button>
++      </div>
++      <p class="hint">Exit banks your best and returns to the title screen</p>
+     </div>
+   </div>
+ </div>
+@@ -230,6 +276,8 @@
+       pick: function () { tone(760, 0.13, 'triangle', 0.05, 480); },
+       hurt: function () { tone(140, 0.32, 'sawtooth', 0.08, -90); },
+       wave: function () { tone(480, 0.16, 'triangle', 0.045, 300); },
++      tick: function () { tone(620, 0.09, 'triangle', 0.04, 90); },
++      go: function () { tone(880, 0.16, 'triangle', 0.05, 260); },
+       over: function () { tone(220, 0.7, 'sine', 0.07, -170); },
+       toggle: function () { muted = !muted; return muted; },
+       isMuted: function () { return muted; }
+@@ -255,6 +303,7 @@
+     best: document.getElementById('best'),
+     hearts: document.getElementById('hearts'),
+     muteTag: document.getElementById('muteTag'),
++    pauseBtn: document.getElementById('pauseBtn'),
+     menuBest: document.getElementById('menuBest'),
+     finalScore: document.getElementById('finalScore'),
+     finalBest: document.getElementById('finalBest')
+@@ -306,7 +355,8 @@
+   try { best = parseInt(localStorage.getItem(STORE_KEY), 10) || 0; } catch (e) { best = 0; }
+ 
+   var game = {
+-    mode: 'menu',      // menu | playing | paused | over
++    mode: 'menu',      // menu | playing | paused | resuming | over
++    countdown: 0,      // seconds left on the 3-2-1 shown when resuming
+     time: 0,
+     score: 0,
+     wave: 1,
+@@ -611,6 +661,23 @@
+   }
+ 
+   // ------------------------------------------------------------------- flow
++  // Keep the corner button in step with the run: hidden in the menu and on the
++  // game-over screen, a pause glyph while playing, a play glyph while paused.
++  function syncPauseBtn() {
++    var counting = game.mode === 'resuming';
++    var stopped = counting || game.mode === 'paused';
++    var live = stopped || game.mode === 'playing';
++    el.pauseBtn.classList.toggle('is-paused', stopped);
++    el.pauseBtn.hidden = !live;
++    el.pauseBtn.setAttribute('aria-pressed', stopped ? 'true' : 'false');
++    el.pauseBtn.setAttribute('aria-label', counting
++      ? 'Cancel the countdown and stay paused'
++      : (stopped ? 'Resume game' : 'Pause game'));
++    el.pauseBtn.title = counting
++      ? 'Back to paused (P or Esc)'
++      : (stopped ? 'Resume (P or Esc)' : 'Pause (P or Esc)');
++  }
++
+   function showPanel(name) {
+     for (var key in panels) {
+       if (Object.prototype.hasOwnProperty.call(panels, key)) {
+@@ -618,6 +685,7 @@
+       }
+     }
+     overlay.classList.toggle('hidden', !name);
++    syncPauseBtn();
+   }
+ 
+   function startGame() {
+@@ -631,6 +699,7 @@
+     game.flash = 0;
+     game.spawnTimer = 0.8;
+     game.bossPending = false;
++    game.countdown = 0;
+     bullets = [];
+     enemies = [];
+     parts = [];
+@@ -654,6 +723,37 @@
+     return true;
+   }
+ 
++  // Leave the run and go back to the title screen. A page cannot close its own
++  // tab unless it opened one, so "exit" means the menu — with the score banked
++  // exactly as a mid-run restart banks it.
++  function exitToMenu() {
++    saveBest();
++    game.mode = 'menu';
++    game.countdown = 0;
++    game.score = 0;
++    game.wave = 1;
++    game.kills = 0;
++    game.shake = 0;
++    game.flash = 0;
++    game.banner = 0;
++    game.bannerText = '';
++    game.spawnTimer = 1;
++    game.bossPending = false;
++    bullets = [];
++    enemies = [];
++    parts = [];
++    drops = [];
++    player = null;
++    heartEls = [];
++    el.hearts.textContent = '';
++    lastHud.score = -1;
++    lastHud.wave = -1;
++    lastHud.best = -1;
++    syncHud();
++    showPanel('menu');
++    say('Left the run. Best ' + best + '.');
++  }
++
+   function endGame() {
+     game.mode = 'over';
+     burst(player.x, player.y, '#ffffff', 50, 420, 4);
+@@ -669,23 +769,47 @@
+     }, 520);
+   }
+ 
++  // Resuming always passes through a short countdown: a boss burst or a drone
++  // that was mid-dive when you paused cannot land before you have the controls
++  // back. The world stays frozen for all of it.
++  var RESUME_SECONDS = 3;
++
+   function togglePause() {
+     if (game.mode === 'playing') {
+       game.mode = 'paused';
+       showPanel('paused');
+     } else if (game.mode === 'paused') {
+-      game.mode = 'playing';
++      game.mode = 'resuming';
++      game.countdown = RESUME_SECONDS;
++      // Rebase the fixed-step clock so the paused interval is never paid back
++      // as a burst of catch-up steps on the first frame after resuming.
++      last = 0;
++      acc = 0;
+       showPanel(null);
++      Sound.tick();
++      say('Resuming in ' + RESUME_SECONDS + '.');
++    } else if (game.mode === 'resuming') {
++      // Cancelled: straight back to the paused panel, world still frozen.
++      game.mode = 'paused';
++      game.countdown = 0;
++      showPanel('paused');
+     }
+   }
+ 
+   // ------------------------------------------------------------------- input
+   function keyDown(ev) {
+     var k = ev.key;
++    // Space/Enter on a focused button (Start, Resume, Exit, the corner pause)
++    // must activate it natively, not be swallowed by the game's own handling.
++    if ((k === ' ' || k === 'Enter') && ev.target && ev.target.tagName === 'BUTTON') { return; }
+     if (k === 'ArrowUp' || k === 'w' || k === 'W') { input.up = 1; steer = 'key'; ev.preventDefault(); }
+     else if (k === 'ArrowDown' || k === 's' || k === 'S') { input.down = 1; steer = 'key'; ev.preventDefault(); }
+     else if (k === 'ArrowLeft' || k === 'a' || k === 'A') { input.left = 1; steer = 'key'; ev.preventDefault(); }
+     else if (k === 'ArrowRight' || k === 'd' || k === 'D') { input.right = 1; steer = 'key'; ev.preventDefault(); }
++    // One-shot actions ignore keyboard autorepeat: holding P (or Esc) for a
++    // moment longer than a tap used to toggle pause many times and leave the
++    // game in whichever state the last repeat happened to land on.
++    else if (ev.repeat) { ev.preventDefault(); }
+     else if (k === ' ' || k === 'Enter') {
+       if (game.mode === 'menu' || game.mode === 'over') { startGame(); }
+       ev.preventDefault();
+@@ -693,7 +817,7 @@
+     else if (k === 'p' || k === 'P' || k === 'Escape') { togglePause(); }
+     else if (k === 'm' || k === 'M') { Sound.toggle(); syncMute(); }
+     else if (k === 'r' || k === 'R') {
+-      if (game.mode === 'playing' || game.mode === 'paused' || game.mode === 'over') {
++      if (game.mode === 'playing' || game.mode === 'paused' || game.mode === 'resuming' || game.mode === 'over') {
+         saveBest();
+         startGame();
+       }
+@@ -710,7 +834,7 @@
+ 
+   // Store the pointer normalised, so resizing or rotating keeps the target valid.
+   function trackPointer(ev) {
+-    if (ev.target && ev.target.closest && ev.target.closest('.panel')) { return; }
++    if (ev.target && ev.target.closest && ev.target.closest('.panel, .pause-btn')) { return; }
+     pointer = {
+       nx: clamp((ev.clientX - rect.left) / (rect.width || 1), 0, 1),
+       ny: clamp((ev.clientY - rect.top) / (rect.height || 1), 0, 1)
+@@ -730,11 +854,11 @@
+ 
+   window.addEventListener('blur', function () {
+     input.up = input.down = input.left = input.right = 0;
+-    if (game.mode === 'playing') { togglePause(); }
++    if (game.mode === 'playing' || game.mode === 'resuming') { togglePause(); }
+   });
+ 
+   document.addEventListener('visibilitychange', function () {
+-    if (document.hidden && game.mode === 'playing') { togglePause(); }
++    if (document.hidden && (game.mode === 'playing' || game.mode === 'resuming')) { togglePause(); }
+   });
+ 
+   window.addEventListener('resize', resize);
+@@ -742,6 +866,13 @@
+   document.getElementById('startBtn').addEventListener('click', startGame);
+   document.getElementById('againBtn').addEventListener('click', startGame);
+   document.getElementById('resumeBtn').addEventListener('click', togglePause);
++  document.getElementById('exitBtn').addEventListener('click', exitToMenu);
++  // A pointer click hands focus back to the page, so a stray Space later cannot
++  // re-fire the button; keyboard activation (ev.detail === 0) keeps its focus.
++  el.pauseBtn.addEventListener('click', function (ev) {
++    togglePause();
++    if (ev.detail) { this.blur(); }
++  });
+ 
+   // ------------------------------------------------------------------ update
+   function updatePlayer(dt) {
+@@ -924,6 +1055,23 @@
+     updateStars(dt);
+     updateParticles(dt);
+ 
++    if (game.mode === 'resuming') {
++      // Only the clock runs: no player, enemies, bullets or drops until zero.
++      // Held direction keys are left alone, so whatever you are holding when it
++      // hits zero is what you fly with.
++      var shown = Math.ceil(game.countdown);
++      game.countdown -= dt;
++      if (game.countdown <= 0) {
++        game.countdown = 0;
++        game.mode = 'playing';
++        Sound.go();
++        syncPauseBtn();
++      } else if (Math.ceil(game.countdown) !== shown) {
++        Sound.tick();
++      }
++      return;
++    }
++
+     if (game.mode !== 'playing') { return; }
+ 
+     updatePlayer(dt);
+@@ -1220,6 +1368,28 @@
+     ctx.restore();
+   }
+ 
++  function drawCountdown() {
++    if (game.mode !== 'resuming') { return; }
++    var n = Math.max(1, Math.ceil(game.countdown));
++    var frac = game.countdown - Math.floor(game.countdown);
++    var pop = reduceMotion.matches ? 1 : 1 + frac * 0.14;
++    var size = Math.round(Math.min(W, H) * 0.17 * pop);
++    ctx.save();
++    ctx.globalAlpha = 0.92;
++    ctx.textAlign = 'center';
++    ctx.textBaseline = 'middle';
++    ctx.font = 'bold ' + size + 'px ui-monospace,monospace';
++    glow('#4de3ff', 34);
++    ctx.fillStyle = '#eafcff';
++    ctx.fillText(String(n), W / 2, H * 0.44);
++    noGlow();
++    ctx.globalAlpha = 0.7;
++    ctx.fillStyle = '#4de3ff';
++    ctx.font = 'bold ' + Math.round(Math.min(W, H) * 0.026) + 'px ui-monospace,monospace';
++    ctx.fillText('GET READY', W / 2, H * 0.44 + size * 0.76);
++    ctx.restore();
++  }
++
+   function draw() {
+     // background (built in resize())
+     ctx.fillStyle = bgGrad;
+@@ -1235,8 +1405,9 @@
+     for (var i = 0; i < enemies.length; i++) { drawEnemy(enemies[i]); }
+     drawBullets();
+     drawParticles();
+-    if (game.mode === 'playing' || game.mode === 'paused') { drawShip(); }
++    if (game.mode === 'playing' || game.mode === 'paused' || game.mode === 'resuming') { drawShip(); }
+     drawBanner();
++    drawCountdown();
+ 
+     ctx.restore();
+ 
+-- 
+2.39.5
+
