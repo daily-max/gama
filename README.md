@@ -54,7 +54,7 @@ The site config sends `no-cache` on `/` and `/index.html` (everything else is ca
 | Fire | automatic | automatic |
 | Pause / resume | `P` or `Esc` | tap the pause button, top-right |
 | Restart | `R` | — |
-| Exit to the title screen | **Exit** on the paused panel (`Tab`, then `Enter`) | tap **Exit** on the paused panel |
+| Exit to the title screen | **Exit** on the paused or game-over panel (`Tab`, then `Enter`) | tap **Exit** on the paused or game-over panel |
 | Mute | `M` | — |
 | Start | `Space` / `Enter` | tap **Start** |
 
@@ -75,7 +75,7 @@ The ship follows whichever you touched last: press a key to switch to keyboard c
   - `+` repairs one hull bar
 - **Lives.** Three hull bars. A hit costs one and gives you a short window of invulnerability. Colliding with a drone hurts both of you.
 - **Resuming.** Coming back from a pause always runs a 3-2-1 countdown with the simulation frozen, so a drone mid-dive or a boss burst cannot land before you have the controls back. Hold a direction during it and you fly that way the moment it hits zero; press `P`, `Esc` or the corner button to cancel it and go back to paused.
-- **Exiting.** The paused panel offers **Exit**: it banks your best score and drops you back on the title screen, exactly as a mid-run restart banks it.
+- **Exiting.** The paused and game-over panels both offer **Exit**: it banks your best score and drops you back on the title screen, exactly as a mid-run restart banks it.
 - **Score** is per kill, with bosses worth far more. Your best run is saved in `localStorage`.
 
 ## Code map
